@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>패링 법사 프로토타입 v10 - 스킬 개별 순차 발사 및 이펙트</title>
+    <style>
+        body {
+            background-color: #111; color: #fff; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            padding-top: 0; box-sizing: border-box; width: 100vw; height: 100vh; margin: 0;
+            overflow: hidden; transition: filter 0.5s;
+            user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;
+        }
+
+        body.bullet-time { filter: contrast(1.2) saturate(0.8) hue-rotate(-10deg); }
+
+        .tbd-warning { border: 3px dashed red !important; animation: blink 1s infinite; position: relative; }
+        @keyframes blink { 50% { border-color: transparent; } }
+
+        #top-controls { position: absolute; top: 20px; right: 30px; display: flex; gap: 20px; align-items: center; z-index: 100; }
+
+        #volume-control {
+            background: rgba(0, 0, 0, 0.6); padding: 10px 15px; border-radius: 12px;
+            border: 1px solid #444; display: flex; flex-direction: column; align-items: center; backdrop-filter: blur(4px);
+        }
+        #volume-control label { font-size: 13px; margin-bottom: 6px; font-weight: bold; color: #ddd; }
+        #volume-slider { cursor: pointer; width: 100px; }
+
+        button.ui-btn {
+            padding: 12px 24px; font-size: 16px; font-weight: bold; background: linear-gradient(135deg, #6e8efb, #a777e3);
+            border: none; border-radius: 8px; color: white; cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5); transition: transform 0.1s, filter 0.2s;
+        }
+        button.ui-btn:active { transform: scale(0.95); }
+        button.ui-btn:disabled { filter: grayscale(1); cursor: not-allowed; opacity: 0.6; transform: none; }
+
+        #game-container {
+            width: 960px; height: 540px; background: #1a1a2e;
+            background-image: radial-gradient(circle at center, #2a2a4e 0%, #1a1a2e 100%);
+            position: relative; border-radius: 16px; border: 2px solid #333;
+            box-shadow: 0 15px 50px rgba(0, 0, 0, 0.8); overflow: hidden;
+            display: flex; flex-direction: column; align-items: center; transition: box-shadow 0.3s;
+        }
+        #game-container.bullet-time { box-shadow: 0 0 40px rgba(167, 119, 227, 0.5), inset 0 0 30px rgba(167, 119, 227, 0.3); border-color: #a777e3; }
+
+        #ground-layer {
+            position: absolute; bottom: 0; left: 0; width: 100%; height: 100px;
+            background: linear-gradient(0deg, #111 0%, #1a1a2e 100%); border-top: 1px solid #333; z-index: 1;
+        }
+
+        #countdown-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.7); display: none; justify-content: center; align-items: center;
+            font-size: 120px; font-weight: bold; color: #ffd700; text-shadow: 0 0 20px rgba(255, 215, 0, 0.5); z-index: 100;
+        }
+
+        #scene-layer {
+            position: absolute; width: 100%; height: 100%; display: flex;
+            justify-content: space-between; align-items: flex-end; padding: 0 100px; box-sizing: border-box; z-index: 10;
+        }
+
+        .actor-container { display: flex; flex-direction: column; align-items: center; position: relative; }
+        #player-sprite { height: 400px; width: auto; transform-origin: bottom center; filter: drop-shadow(0 15px 15px rgba(0,0,0,0.8)); }
+        #boss-sprite {
+            width: 250px; height: 400px; background: rgba(255, 85, 85, 0.15); border: 2px dashed #ff5555;
+            border-radius: 12px; display: flex; flex-direction: column; justify-content: center; align-items: center;
+            color: #ffaa00; font-size: 24px; font-weight: bold; text-shadow: 1px 1px 5px #000; filter: drop-shadow(0 15px 15px rgba(0,0,0,0.8)); position: relative;
+        }
+        #boss-state { margin-top: 10px; font-size: 16px; color: #fff; }
+
+        .hp-bar-container {
+            width: 150px; height: 12px; background: #222; border: 2px solid #555; border-radius: 6px;
+            margin-bottom: 10px; overflow: hidden; position: relative;
+        }
+        .hp-bar-fill { height: 100%; background: #ff3333; width: 100%; transition: width 0.2s ease-out; }
+        .hp-text { position: absolute; top: -20px; font-size: 12px; font-weight: bold; color: #fff; text-shadow: 1px 1px 2px #000; width: 100%; text-align: center; }
+
+        #floating-text {
+            position: absolute; top: 30%; left: 50%; transform: translateX(-50%);
+            font-size: 60px; font-weight: 900; font-style: italic; pointer-events: none; opacity: 0; z-index: 80;
+            text-shadow: 0 0 15px rgba(0,0,0,0.8), 2px 2px 0px #000; letter-spacing: 2px;
+        }
+        .float-anim { animation: hitReaction 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+        @keyframes hitReaction {
+            0% { opacity: 1; transform: translate(-50%, 20px) scale(0.5); }
+            40% { transform: translate(-50%, -10px) scale(1.1); }
+            100% { opacity: 0; transform: translate(-50%, -30px) scale(1.0); }
+        }
+
+        #timing-area {
+            position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%);
+            width: 700px; height: 40px; background: rgba(0, 0, 0, 0.6);
+            border: 2px solid rgba(255, 255, 255, 0.3); border-radius: 20px; overflow: hidden;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.9); z-index: 50; opacity: 0; transition: opacity 0.2s ease-in-out; pointer-events: none;
+        }
+        #timing-area.active { opacity: 1; }
+        .target-zone { position: absolute; left: 50%; top: 0; height: 100%; transform: translateX(-50%); }
+        .target-good { width: 250px; background: linear-gradient(90deg, transparent, rgba(255, 215, 0, 0.3) 20%, rgba(255, 215, 0, 0.5) 50%, rgba(255, 215, 0, 0.3) 80%, transparent); }
+        .target-perfect { width: 80px; background: rgba(0, 255, 100, 0.6); border-left: 2px solid #fff; border-right: 2px solid #fff; box-shadow: 0 0 15px rgba(0, 255, 100, 0.8); }
+        .center-line { position: absolute; left: 50%; top: -5px; bottom: -5px; width: 4px; background: #fff; transform: translateX(-50%); box-shadow: 0 0 5px #fff; z-index: 2; }
+        .indicator {
+            width: 36px; height: 36px; background: radial-gradient(circle at top left, #ffaaaa, #ff0000);
+            border: 2px solid #fff; border-radius: 50%; position: absolute; top: 0;
+            transition: left 0.1s linear; box-shadow: 0 0 10px rgba(255, 0, 0, 0.8); z-index: 3;
+        }
+        #indicator-left { left: 0%; }
+        #indicator-right { left: 100%; transform: translateX(-100%); }
+
+        #drawing-panel {
+            position: absolute; left: 380px; top: 70px;
+            width: 250px; height: 380px; background: rgba(20, 20, 40, 0.85);
+            border: 2px solid #a777e3; border-radius: 12px; display: none; 
+            flex-direction: column; align-items: center; padding: 10px;
+            box-shadow: 0 0 30px rgba(167, 119, 227, 0.6); z-index: 60; backdrop-filter: blur(5px);
+        }
+        #drawing-panel.active { display: flex; }
+        #drawing-header { font-size: 14px; font-weight: bold; color: #d8c0ff; margin-bottom: 5px; text-align: center; line-height: 1.4; }
+        #drawing-timer { font-size: 24px; font-weight: 900; color: crimson; margin-bottom: 5px; }
+
+        #draw-canvas { background: rgba(0, 0, 0, 0.5); border: 1px solid #666; border-radius: 8px; cursor: crosshair; }
+
+        #queued-skills { display: flex; gap: 10px; margin-top: 15px; height: 40px; width: 100%; justify-content: center; }
+        .skill-slot {
+            width: 45px; height: 35px; border: 2px solid #888; border-radius: 6px;
+            background: rgba(0,0,0,0.6); display: flex; justify-content: center; align-items: center;
+            font-weight: bold; font-size: 11px; color: #fff; transition: transform 0.1s, box-shadow 0.1s;
+        }
+        .skill-slot.filled { border-color: #00ff66; background: rgba(0, 255, 100, 0.2); color: #00ff66; text-shadow: 0 0 3px #000; transform: scale(1.1); box-shadow: 0 0 10px rgba(0,255,100,0.5);}
+
+        .damage-text {
+            position: absolute; color: #ff3333; font-size: 40px; font-weight: 900;
+            z-index: 90; pointer-events: none; text-shadow: 2px 2px 0px #fff, -1px -1px 0 #000;
+            animation: dmgPop 1s ease-out forwards;
+        }
+        .heal-text { color: #55ff55; }
+        @keyframes dmgPop {
+            0% { transform: translateY(0) scale(0.5); opacity: 1; }
+            30% { transform: translateY(-30px) scale(1.2); }
+            100% { transform: translateY(-60px) scale(1); opacity: 0; }
+        }
+
+        #gameover-overlay {
+            position: absolute; top:0; left:0; width:100%; height:100%;
+            background: rgba(50,0,0,0.85); display: none; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 200;
+        }
+        #gameover-overlay h1 { font-size: 80px; color: #ff3333; text-shadow: 0 0 20px #ff0000; margin-bottom: 30px; }
+
+        /* 마법 발사체 애니메이션용 CSS */
+        .projectile {
+            position: absolute; width: 60px; height: 60px;
+            border-radius: 50%; z-index: 70; pointer-events: none;
+            display: flex; justify-content: center; align-items: center;
+            font-size: 30px; font-weight: bold; color: white;
+            text-shadow: 0 0 10px rgba(255,255,255,0.8);
+            box-shadow: 0 0 20px currentColor; /* 색상은 JS에서 부모 color 속성으로 주입 */
+        }
+        /* 불꽃 특화 */
+        .proj-fire { background: radial-gradient(circle, #ffcc00, #ff3300); color: #ff3300; }
+        /* 바람 특화 (ㅡ 선형태 비슷하게 찌그러트림) */
+        .proj-wind { background: radial-gradient(circle, #ccffff, #00ffcc); color: #00ffcc; border-radius: 10px; height: 20px; }
+        /* 얼음 특화 (삼각형태 모방) */
+        .proj-ice { background: radial-gradient(circle, #ffffff, #66ccff); color: #66ccff; clip-path: polygon(50% 0%, 0% 100%, 100% 100%); border-radius: 0; box-shadow: none; filter: drop-shadow(0 0 10px #66ccff); }
+
+    </style>
+</head>
+
+<body>
+
+    <div id="top-controls">
+        <button id="btn-start" class="ui-btn" onclick="startCountdown()">▶ 게임 시작 / 재시작</button>
+        <div id="volume-control">
+            <label for="volume-slider">BGM 볼륨</label>
+            <input type="range" id="volume-slider" min="0" max="1" step="0.01" value="0.5" oninput="changeVolume(this.value)">
+        </div>
+    </div>
+
+    <!-- 16:9 컨테이너 -->
+    <div id="game-container">
+        <div id="ground-layer"></div>
+        <div id="countdown-overlay">3</div>
+        <div id="floating-text">PERFECT!</div>
+        
+        <div id="gameover-overlay">
+            <h1>YOU DIED</h1>
+            <button class="ui-btn" onclick="startCountdown()">재도전</button>
+        </div>
+
+        <div id="scene-layer">
+            <div class="actor-container" id="player-container">
+                <div class="hp-text">HP: <span id="player-hp-txt">100</span>/100</div>
+                <div class="hp-bar-container"><div class="hp-bar-fill" id="player-hp-bar"></div></div>
+                <div id="player-shield" style="position: absolute; bottom: 0; width: 100px; height: 400px; background: rgba(100, 200, 255, 0.4); border-radius: 50%; box-shadow: 0 0 30px #64c8ff; display:none; pointer-events: none;"></div>
+                <img id="player-sprite" src="frame_000_v01.gif" alt="Player Character">
+            </div>
+
+            <div id="drawing-panel">
+                <div id="drawing-header">마법 그리기 모드<br><small>ㅡ(윈드) | V(불꽃) | ^(얼음) | O(실드) </small></div>
+                <div id="drawing-timer">4.5</div>
+                <canvas id="draw-canvas" width="220" height="200"></canvas>
+                <div id="queued-skills">
+                    <div class="skill-slot">빈칸</div><div class="skill-slot">빈칸</div><div class="skill-slot">빈칸</div>
+                </div>
+            </div>
+
+            <div class="actor-container" id="boss-container">
+                <div class="hp-text">HP: <span id="boss-hp-txt">1000</span>/1000</div>
+                <div class="hp-bar-container"><div class="hp-bar-fill" id="boss-hp-bar"></div></div>
+                <!-- 쉴드 발동용 방어막 이펙트를 보스에 임시 부착 (보스 피격시 깜박임용 용도 변경 가능) -->
+                <div id="boss-sprite">BOSS<div id="boss-state">IDLE</div></div>
+            </div>
+        </div>
+
+        <div id="timing-area">
+            <div class="target-zone target-good"></div><div class="target-zone target-perfect"></div>
+            <div class="center-line"></div>
+            <div id="indicator-left" class="indicator"></div><div id="indicator-right" class="indicator"></div>
+        </div>
+    </div>
+
+    <audio id="bgm" src="Pixel Aria in C Minor.mp3" preload="auto" loop></audio>
+
+    <script>
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const synthCtx = new AudioContext();
+
+        // 1. 피격 효과음(타격음) 3종 추가: 불꽃(폭발음), 얼음(쨍그랑), 윈드(촥!)
+        function playSound(type, pitchStep = 0) {
+            if (synthCtx.state === 'suspended') synthCtx.resume();
+            
+            const osc = synthCtx.createOscillator();
+            const gain = synthCtx.createGain();
+            osc.connect(gain);
+            gain.connect(synthCtx.destination);
+            
+            const baseVol = parseFloat(document.getElementById("volume-slider").value);
+
+            if (type === 'parry_perfect') {
+                osc.type = 'sine'; osc.frequency.setValueAtTime(880, synthCtx.currentTime); osc.frequency.exponentialRampToValueAtTime(1760, synthCtx.currentTime + 0.1);
+                gain.gain.setValueAtTime(baseVol * 0.8, synthCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, synthCtx.currentTime + 0.3);
+                osc.start(); osc.stop(synthCtx.currentTime + 0.3);
+            } 
+            else if (type === 'parry_good') {
+                osc.type = 'triangle'; osc.frequency.setValueAtTime(659.25, synthCtx.currentTime);
+                gain.gain.setValueAtTime(baseVol * 0.7, synthCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, synthCtx.currentTime + 0.2);
+                osc.start(); osc.stop(synthCtx.currentTime + 0.2);
+            }
+            else if (type === 'skill_success') {
+                const baseFrequencies = [523.25, 622.25, 783.99]; // C5, Eb5, G5 
+                const freq = baseFrequencies[pitchStep] || 1046.50; 
+                osc.type = 'sine'; osc.frequency.setValueAtTime(freq, synthCtx.currentTime); 
+                gain.gain.setValueAtTime(baseVol * 0.6, synthCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, synthCtx.currentTime + 0.4);
+                
+                const osc2 = synthCtx.createOscillator(); osc2.type = 'sine'; osc2.frequency.setValueAtTime(freq * 1.01, synthCtx.currentTime); osc2.connect(gain);
+                osc2.start(); osc2.stop(synthCtx.currentTime + 0.4);
+                osc.start(); osc.stop(synthCtx.currentTime + 0.4);
+            }
+            else if (type === 'skill_fail') {
+                osc.type = 'sawtooth'; osc.frequency.setValueAtTime(150, synthCtx.currentTime); osc.frequency.linearRampToValueAtTime(100, synthCtx.currentTime + 0.2);
+                gain.gain.setValueAtTime(baseVol * 0.5, synthCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, synthCtx.currentTime + 0.2);
+                osc.start(); osc.stop(synthCtx.currentTime + 0.2);
+            }
+            // --- 신규 타격음 ---
+            else if (type === 'hit_fire') { // 무겁게 터지는 펑
+                osc.type = 'square'; osc.frequency.setValueAtTime(100, synthCtx.currentTime); osc.frequency.exponentialRampToValueAtTime(10, synthCtx.currentTime + 0.3);
+                gain.gain.setValueAtTime(baseVol, synthCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, synthCtx.currentTime + 0.3);
+                
+                // 노이즈 추가
+                const noise = synthCtx.createBufferSource();
+                const buffer = synthCtx.createBuffer(1, synthCtx.sampleRate * 0.3, synthCtx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < buffer.length; i++) data[i] = Math.random() * 2 - 1;
+                noise.buffer = buffer; noise.connect(gain);
+                noise.start();
+                osc.start(); osc.stop(synthCtx.currentTime + 0.3);
+            }
+            else if (type === 'hit_ice') { // 높고 날카로운 챙!
+                osc.type = 'triangle'; osc.frequency.setValueAtTime(1200, synthCtx.currentTime); osc.frequency.exponentialRampToValueAtTime(200, synthCtx.currentTime + 0.1);
+                gain.gain.setValueAtTime(baseVol * 0.8, synthCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, synthCtx.currentTime + 0.2);
+                osc.start(); osc.stop(synthCtx.currentTime + 0.2);
+            }
+            else if (type === 'hit_wind') { // 날카롭게 자르는 쉭!
+                const noise = synthCtx.createBufferSource();
+                const buffer = synthCtx.createBuffer(1, synthCtx.sampleRate * 0.2, synthCtx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < buffer.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - (i/buffer.length)); // 선형 감쇄
+                noise.buffer = buffer; 
+                
+                // 바람소리 필터
+                const filter = synthCtx.createBiquadFilter();
+                filter.type = 'bandpass'; filter.frequency.value = 1000;
+                noise.connect(filter); filter.connect(gain);
+                gain.gain.setValueAtTime(baseVol, synthCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, synthCtx.currentTime + 0.2);
+                noise.start();
+            }
+        }
+
+        // ============================================
+        // === $1 Unistroke Recognizer (정밀도 보정본) ===
+        // ============================================
+        class Point { constructor(x, y) { this.x=x; this.y=y; } }
+        class Rectangle { constructor(x, y, width, height) { this.x=x; this.y=y; this.width=width; this.height=height; } }
+        const NumPoints = 64; const SquareSize = 250.0; const Origin = new Point(0, 0);
+
+        function resample(points, n) { let I = pathLength(points) / (n - 1); let D = 0.0; let newpoints = [points[0]]; for (let i = 1; i < points.length; i++) { let d = distance(points[i - 1], points[i]); if ((D + d) >= I) { let qx = points[i - 1].x + ((I - D) / d) * (points[i].x - points[i - 1].x); let qy = points[i - 1].y + ((I - D) / d) * (points[i].y - points[i - 1].y); let q = new Point(qx, qy); newpoints.push(q); points.splice(i, 0, q); D = 0.0; } else D += d; } if (newpoints.length == n - 1) newpoints.push(new Point(points[points.length - 1].x, points[points.length - 1].y)); return newpoints; }
+        function scaleTo(points, size) { let B = boundingBox(points); let newpoints = []; for (let i = 0; i < points.length; i++) { let qx = points[i].x * (size / Math.max(B.width, 0.01)); let qy = points[i].y * (size / Math.max(B.height, 0.01)); newpoints.push(new Point(qx, qy)); } return newpoints; }
+        function translateTo(points, pt) { let c = centroid(points); let newpoints = []; for (let i = 0; i < points.length; i++) { let qx = points[i].x + pt.x - c.x; let qy = points[i].y + pt.y - c.y; newpoints.push(new Point(qx, qy)); } return newpoints; }
+        function vectorize(points) { let sum = 0.0; let vector = []; for (let i = 0; i < points.length; i++) { vector.push(points[i].x); vector.push(points[i].y); sum += (points[i].x * points[i].x) + (points[i].y * points[i].y); } let magnitude = Math.sqrt(sum); for (let i = 0; i < vector.length; i++) vector[i] /= magnitude; return vector; }
+        function optimalCosineDistance(v1, v2) { let a = 0.0, b = 0.0; for (let i = 0; i < v1.length; i += 2) { a += v1[i] * v2[i] + v1[i + 1] * v2[i + 1]; b += v1[i] * v2[i + 1] - v1[i + 1] * v2[i]; } let angle = Math.atan(b / a); return Math.acos(a * Math.cos(angle) + b * Math.sin(angle)); }
+        class Template { constructor(name, points) { this.name = name; this.points = resample(points, NumPoints); this.points = scaleTo(this.points, SquareSize); this.points = translateTo(this.points, Origin); this.vector = vectorize(this.points); } }
+        function pathLength(points) { let d = 0.0; for (let i = 1; i < points.length; i++) d += distance(points[i - 1], points[i]); return d; }
+        function distance(p1, p2) { let dx = p2.x - p1.x; let dy = p2.y - p1.y; return Math.sqrt(dx * dx + dy * dy); }
+        function boundingBox(points) { let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity; for (let i = 0; i < points.length; i++) { minX = Math.min(minX, points[i].x); maxX = Math.max(maxX, points[i].x); minY = Math.min(minY, points[i].y); maxY = Math.max(maxY, points[i].y); } return new Rectangle(minX, minY, maxX - minX, maxY - minY); }
+        function centroid(points) { let x = 0.0, y = 0.0; for (let i = 0; i < points.length; i++) { x += points[i].x; y += points[i].y; } x /= points.length; y /= points.length; return new Point(x, y); }
+
+        let templates = [];
+        templates.push(new Template("윈드 슬래시", [new Point(10,50), new Point(190,50)])); 
+        templates.push(new Template("윈드 슬래시", [new Point(10,60), new Point(100,40), new Point(190,60)])); 
+        templates.push(new Template("윈드 슬래시", [new Point(190,50), new Point(10,50)])); 
+        templates.push(new Template("불꽃", [new Point(10,10), new Point(100,190), new Point(190,10)]));
+        templates.push(new Template("불꽃", [new Point(20,50), new Point(100,190), new Point(180,50)]));
+        templates.push(new Template("얼음 쐐기", [new Point(10,190), new Point(100,10), new Point(190,190)]));
+        let circlePts = []; let revCirclePts = [];
+        for(let i=0; i<=36; i++) { let angle = (i/36) * Math.PI * 2; circlePts.push(new Point(100 + Math.cos(angle)*90, 100 + Math.sin(angle)*90)); let angleRev = ((36-i)/36) * Math.PI * 2; revCirclePts.push(new Point(100 + Math.cos(angleRev)*90, 100 + Math.sin(angleRev)*90)); }
+        templates.push(new Template("쉴드", circlePts)); templates.push(new Template("쉴드", revCirclePts));
+
+        function recognizeDollar1(points) {
+            if(points.length < 5) return null; 
+            let bBox = boundingBox(points);
+            if(bBox.width < 10 && bBox.height < 10) return null;
+
+            let pts = resample(points, NumPoints); pts = scaleTo(pts, SquareSize); pts = translateTo(pts, Origin); let vector = vectorize(pts);
+            let bestDist = Infinity; let bestName = "";
+
+            for (let i = 0; i < templates.length; i++) { let dist = optimalCosineDistance(templates[i].vector, vector); if (dist < bestDist) { bestDist = dist; bestName = templates[i].name; } }
+            if(bestDist < 0.75) return bestName; else return null;
+        }
+
+        // ============================================
+
+        window.state = {
+            gameState: "READY", countdownValue: 3, bpm: 140, bossPhase: "IDLE", 
+            beatCount: 0, nextBeatTime: 0, isTimingActive: false, hasAttemptedParry: false, fiveBeatTargetTime: 0,
+            perfectRangeMs: 80, goodRangeMs: 200,
+            player: { hp: 100, maxHp: 100, atk: 10, hasShield: false },
+            boss: { hp: 1000, maxHp: 1000, atk: 15 },
+            drawingMode: { active: false, beatsLeft: 0, perfectBuff: false, queuedSkills: [] },
+            audioFadeInterval: null
+        };
+
+        const bgmAudio = document.getElementById("bgm");
+        let gameLoopReq; let countdownInterval; let lastTime = 0; let internalClock = 0; 
+
+        function fadeVolume(targetVolRatio, durationMs) {
+            if(window.state.audioFadeInterval) clearInterval(window.state.audioFadeInterval);
+            const baseVol = parseFloat(document.getElementById("volume-slider").value);
+            const targetRealVol = baseVol * targetVolRatio;
+            const startVol = bgmAudio.volume;
+            const diff = targetRealVol - startVol;
+            const steps = 20; const stepMs = durationMs / steps; let currentStep = 0;
+
+            window.state.audioFadeInterval = setInterval(() => {
+                currentStep++;
+                bgmAudio.volume = Math.max(0, Math.min(1, startVol + (diff * (currentStep / steps))));
+                if(currentStep >= steps) { bgmAudio.volume = targetRealVol; clearInterval(window.state.audioFadeInterval); }
+            }, stepMs);
+        }
+        
+        function changeVolume(val) { 
+            if(window.state.audioFadeInterval) clearInterval(window.state.audioFadeInterval);
+            if (window.state.drawingMode.active) bgmAudio.volume = val * 0.3; else bgmAudio.volume = val; 
+        }
+        bgmAudio.volume = document.getElementById("volume-slider").value;
+
+        function addLog(type, msg) {
+            const time = new Date().toISOString().substring(11, 19);
+            const form = type === "ERROR" || type === "TBD" ? "color:red; font-weight:bold;" : "color:lightgreen;";
+            console.log(`%c[${time}] [${type}] ${msg}`, form);
+        }
+
+        const canvas = document.getElementById("draw-canvas");
+        const ctx = canvas.getContext("2d");
+        let isDrawingPath = false; let pathPoints = [];
+
+        function getMousePos(e) { const rect = canvas.getBoundingClientRect(); return new Point(e.clientX - rect.left, e.clientY - rect.top); }
+
+        canvas.addEventListener("mousedown", (e) => {
+            if(!window.state.drawingMode.active) return;
+            if(window.state.drawingMode.queuedSkills.length >= 3) return;
+            e.preventDefault();
+
+            isDrawingPath = true; pathPoints = [getMousePos(e)];
+            ctx.beginPath(); ctx.moveTo(pathPoints[0].x, pathPoints[0].y);
+            ctx.strokeStyle = "#a777e3"; ctx.lineWidth = 8; ctx.lineCap = "round"; ctx.lineJoin = "round";
+        });
+
+        window.addEventListener("mousemove", (e) => {
+            if(isDrawingPath) { const pt = getMousePos(e); pathPoints.push(pt); ctx.lineTo(pt.x, pt.y); ctx.stroke(); }
+        });
+
+        window.addEventListener("mouseup", (e) => {
+            if(isDrawingPath) {
+                isDrawingPath = false;
+                const shapeName = recognizeDollar1(pathPoints);
+                
+                if(shapeName) enrollSkill(shapeName);
+                else {
+                    addLog("ACTION", "스킬 인식 실패");
+                    showFloatingText("모양 MISS!", "#ffaa00", true);
+                    playSound('skill_fail'); 
+                }
+                setTimeout(() => { ctx.clearRect(0,0, canvas.width, canvas.height); }, 200);
+            }
+        });
+
+        function enrollSkill(skillName) {
+            let mult = 1.0; let cssClass = ""; let soundType = "";
+            
+            // 데이터화: 순차 발사 시 활용하기 위해 메타 데이터 포함
+            if(skillName === "불꽃") { mult = 1.5; cssClass="proj-fire"; soundType="hit_fire"; }
+            else if(skillName === "얼음 쐐기") { mult = 1.2; cssClass="proj-ice"; soundType="hit_ice"; }
+            else if(skillName === "윈드 슬래시") { mult = 1.0; cssClass="proj-wind"; soundType="hit_wind"; }
+            else if(skillName === "쉴드") { mult = 0; cssClass="proj-shield"; soundType="skill_success"; } // 쉴드는 발사체 없음
+            
+            window.state.drawingMode.queuedSkills.push({ 
+                name: skillName, 
+                dmg: window.state.player.atk * mult,
+                cssClass: cssClass,
+                soundType: soundType
+            });
+            
+            addLog("ACTION", `스킬 장전: ${skillName}`);
+            ctx.strokeStyle = skillName === "불꽃" ? "red" : (skillName === "쉴드" ? "cyan" : "#00ff66");
+            ctx.stroke(); 
+            playSound('skill_success', window.state.drawingMode.queuedSkills.length - 1);
+            renderQuedSkills();
+        }
+
+        function render() {
+            const btn = document.getElementById("btn-start"); btn.disabled = (window.state.gameState === "COUNTDOWN" || window.state.gameState === "PLAYING");
+            const overlay = document.getElementById("countdown-overlay");
+            if (window.state.gameState === "COUNTDOWN") { overlay.style.display = "flex"; overlay.innerText = window.state.countdownValue; } else { overlay.style.display = "none"; }
+
+            const pText = window.state.bossPhase
+                .replace("SEQ_3_WARN", "전조! 3박").replace("SEQ_4_READY", "차징! 4박").replace("SEQ_5_ATTACK", "공격!! 5박")
+                .replace("PARRIED", "[기회 잡음!]").replace("SKILL_FIRE", "피격중!").replace("COOLDOWN", "대기중");
+            document.getElementById("boss-state").innerText = pText;
+
+            document.getElementById("player-hp-txt").innerText = Math.round(window.state.player.hp);
+            document.getElementById("player-hp-bar").style.width = `${Math.max(0, (window.state.player.hp / window.state.player.maxHp) * 100)}%`;
+            document.getElementById("boss-hp-txt").innerText = Math.round(window.state.boss.hp);
+            document.getElementById("boss-hp-bar").style.width = `${Math.max(0, (window.state.boss.hp / window.state.boss.maxHp) * 100)}%`;
+
+            document.getElementById("player-shield").style.display = window.state.player.hasShield ? "block" : "none";
+
+            const drawingPanel = document.getElementById("drawing-panel");
+            if(window.state.drawingMode.active) {
+                drawingPanel.classList.add("active");
+                document.getElementById("drawing-timer").innerText = window.state.drawingMode.beatsLeft.toFixed(1); 
+            } else drawingPanel.classList.remove("active");
+
+            const timingArea = document.getElementById("timing-area");
+            if (window.state.isTimingActive) timingArea.classList.add("active"); else timingArea.classList.remove("active");
+        }
+
+        function renderQuedSkills() {
+            const slots = document.querySelectorAll("#queued-skills .skill-slot");
+            const qs = window.state.drawingMode.queuedSkills;
+            for(let i=0; i<3; i++) {
+                slots[i].classList.remove("filled");
+                if(i < qs.length) { 
+                    slots[i].innerText = qs[i].name; 
+                    setTimeout(() => { slots[i].classList.add("filled"); }, 50);
+                }
+                else { slots[i].innerText = "-"; }
+            }
+        }
+
+        function showFloatingText(text, color, isSmall) {
+            const el = document.getElementById("floating-text");
+            el.innerText = text; el.style.color = color; el.style.fontSize = isSmall ? "40px" : "60px";
+            el.classList.remove("float-anim"); void el.offsetWidth; el.classList.add("float-anim");
+        }
+
+        function spawnDamageText(x, y, amount, isHeal) {
+            const el = document.createElement("div"); el.className = "damage-text";
+            if(isHeal) el.classList.add("heal-text");
+            el.innerText = isHeal ? `쉴드!` : `-${Math.round(amount)}`;
+            el.style.left = x + 'px'; el.style.top = y + 'px';
+            document.getElementById("game-container").appendChild(el);
+            setTimeout(() => { el.remove(); }, 1000); 
+        }
+
+        // ============================================
+        // === 스킬 순차 발사 및 시각/사운드 이펙트 연출 ===
+        // ============================================
+        function fireQueuedSkills() {
+            const isBuffed = window.state.drawingMode.perfectBuff;
+            const skills = window.state.drawingMode.queuedSkills;
+            
+            if(skills.length === 0) {
+                addLog("ACTION", "장전된 스킬 없음 (0회 타격)");
+                return;
+            }
+
+            const pRect = document.getElementById("player-sprite").getBoundingClientRect();
+            const bRect = document.getElementById("boss-sprite").getBoundingClientRect();
+            
+            // 중앙 좌표 계산
+            const startX = pRect.left + pRect.width/2;
+            const startY = pRect.top + pRect.height/2;
+            const targetX = bRect.left + bRect.width/2;
+            const targetY = bRect.top + bRect.height/2;
+
+            // 재귀 함수로 시간차를 두고(0.3초) 하나씩 발사
+            function fireNext(index) {
+                if (index >= skills.length) return; // 모두 발사 완료
+
+                const s = skills[index];
+                
+                // 1) 쉴드 처리 (발사체 필요 없음, 즉시 적용)
+                if(s.name === "쉴드") {
+                    window.state.player.hasShield = true;
+                    addLog("ACTION", "쉴드 전개");
+                    render(); // 파란 원 표시
+                    playSound('skill_success', 2); // 뾰롱~
+                    setTimeout(() => { fireNext(index + 1); }, 300); // 0.3초 뒤 다음 스킬
+                    return;
+                }
+
+                // 2) 공격용 투사체 생성 (DOM + 애니메이션)
+                let finalDmg = s.dmg;
+                if(isBuffed) finalDmg *= 1.1; 
+
+                // 투사체 DOM 엘리먼트 생성
+                const proj = document.createElement("div");
+                proj.className = `projectile ${s.cssClass}`;
+                
+                // 불리거나 바람, 얼음의 이니셜/이모티콘
+                if(s.name === "불꽃") proj.innerText = "🔥";
+                if(s.name === "얼음 쐐기") proj.innerText = "❄️";
+                if(s.name === "윈드 슬래시") proj.innerText = "🌪";
+
+                proj.style.left = startX + 'px';
+                proj.style.top = startY + 'px';
+                document.getElementById("game-container").appendChild(proj);
+
+                // 투사체 이동 애니메이션 (웹 API)
+                const animation = proj.animate([
+                    { transform: `translate(0, 0) scale(0.5)`, opacity: 0 },
+                    { transform: `translate(${(targetX - startX)*0.2}px, -50px) scale(1)`, opacity: 1 }, // 약간 위로 포물선
+                    { transform: `translate(${targetX - startX}px, ${targetY - startY}px) scale(1.5)`, opacity: 0.8 } // 보스 도달
+                ], {
+                    duration: 400, // 날아가는 속도 (0.4초)
+                    easing: 'ease-in',
+                    fill: 'forwards'
+                });
+
+                // 투사체가 보스에 적중했을 때 (= 0.4초 뒤)
+                animation.onfinish = () => {
+                    proj.remove(); // 이펙트 삭제
+                    
+                    // 보스 체력 삭감
+                    window.state.boss.hp -= finalDmg;
+                    if(window.state.boss.hp < 0) { window.state.boss.hp = 0; gameClear(); }
+                    
+                    // 데미지 텍스트 팝업 (랜덤 흩뿌림 효과)
+                    const driftX = (Math.random() - 0.5) * 60;
+                    spawnDamageText(bRect.left + 50 + driftX, bRect.top + 100, finalDmg, false);
+                    
+                    // 타격 사운드 호출! (불, 물, 바람 각기 다름)
+                    playSound(s.soundType);
+                    
+                    // 보스 피격 애니메이션 (잠시 움츠러들기)
+                    const bossEl = document.getElementById("boss-sprite");
+                    bossEl.style.transform = `scale(0.9) translateX(10px)`;
+                    bossEl.style.filter = `brightness(1.5) hue-rotate(30deg)`;
+                    setTimeout(() => {
+                        bossEl.style.transform = `scale(1) translateX(0px)`;
+                        bossEl.style.filter = `drop-shadow(0 15px 15px rgba(0,0,0,0.8))`;
+                    }, 100);
+
+                    addLog("ACTION", `${s.name} 적중! (데미지: ${finalDmg.toFixed(1)})`);
+                    render(); // HP 갱신
+                };
+
+                // 시간차 발동: 게임의 현재 재생 BPM에 맞춰 정확히 1박자 단위(약 428ms)로 다음 스킬 연속 발사
+                const beatMs = 60000 / window.state.bpm;
+                setTimeout(() => {
+                    fireNext(index + 1);
+                }, beatMs); 
+            }
+
+            // 시퀀스 0번(첫 스킬)부터 시작
+            fireNext(0);
+        }
+
+        // ============================================
+
+        function startCountdown() {
+            if (window.state.gameState === "PLAYING" || window.state.gameState === "COUNTDOWN") return;
+            cancelAnimationFrame(gameLoopReq); bgmAudio.pause(); bgmAudio.currentTime = 0; bgmAudio.playbackRate = 1.0;
+            document.body.classList.remove("bullet-time"); document.getElementById("game-container").classList.remove("bullet-time");
+
+            window.state.gameState = "COUNTDOWN"; window.state.countdownValue = 3;
+            document.getElementById("gameover-overlay").style.display = 'none';
+            
+            window.state.player.hp = window.state.player.maxHp; window.state.player.hasShield = false;
+            window.state.boss.hp = window.state.boss.maxHp;
+            window.state.bossPhase = "IDLE"; window.state.isTimingActive = false; window.state.hasAttemptedParry = false; window.state.drawingMode.active = false;
+            
+            document.getElementById('indicator-left').style.left = '0%'; document.getElementById('indicator-right').style.left = '100%';
+            render(); renderQuedSkills();
+
+            if (synthCtx.state === 'suspended') synthCtx.resume();
+            countdownInterval = setInterval(() => {
+                window.state.countdownValue--;
+                if (window.state.countdownValue <= 0) { clearInterval(countdownInterval); startGameFromCountdown(); }
+                render();
+            }, 1000);
+        }
+
+        function startGameFromCountdown() {
+            window.state.bossPhase = "FIRST_WAIT_10"; window.state.beatCount = 10; window.state.gameState = "PLAYING";
+            if (bgmAudio.src) bgmAudio.play().catch(e => addLog("ERROR", "Audio Play Blocked"));
+            lastTime = performance.now(); internalClock = lastTime; 
+            window.state.nextBeatTime = internalClock + (60000 / window.state.bpm);
+            addLog("ACTION", "게임 진행 시작"); render(); gameLoopReq = requestAnimationFrame(gameLoop);
+        }
+
+        function gameLoop(now) {
+            if (window.state.gameState !== "PLAYING") return;
+            let delta = now - lastTime; lastTime = now; internalClock += delta; 
+            let currentMsPerBeat = 60000 / window.state.bpm;
+
+            if (internalClock >= window.state.nextBeatTime) {
+                if (window.state.bossPhase === "PARRIED") {
+                    window.state.beatCount -= 1;
+                    if(window.state.beatCount <= 0 && window.state.drawingMode.active) handleBeatTick();
+                } else handleBeatTick();
+                window.state.nextBeatTime += currentMsPerBeat;
+            }
+
+            if (window.state.isTimingActive && window.state.fiveBeatTargetTime > 0) {
+                const durationForAnims = currentMsPerBeat * 2;
+                const startAnimTime = window.state.fiveBeatTargetTime - durationForAnims;
+                let progress = (internalClock - startAnimTime) / durationForAnims;
+                if (progress < 0) progress = 0; if (progress > 1) progress = 1;
+
+                const indL = document.getElementById('indicator-left'); const indR = document.getElementById('indicator-right');
+                indL.style.left = `${progress * 50}%`; indR.style.left = `${100 - (progress * 50)}%`;
+                
+                if (internalClock > window.state.fiveBeatTargetTime + window.state.goodRangeMs + 50) {
+                    indL.style.opacity = '0'; indR.style.opacity = '0';
+                } else { indL.style.opacity = '1'; indR.style.opacity = '1'; }
+            }
+
+            if(window.state.drawingMode.active) {
+                const diff = (window.state.nextBeatTime - internalClock) / currentMsPerBeat;
+                const bLeft = (window.state.beatCount > 0 ? window.state.beatCount - 1 : 0) + diff;
+                window.state.drawingMode.beatsLeft = Math.max(0, bLeft); render(); 
+            }
+            gameLoopReq = requestAnimationFrame(gameLoop);
+        }
+
+        function handleBeatTick() {
+            switch (window.state.bossPhase) {
+                case "FIRST_WAIT_10": case "COOLDOWN":
+                    window.state.beatCount--; if (window.state.beatCount <= 0) window.state.bossPhase = "SEQ_1";
+                    break;
+                case "SEQ_1": window.state.bossPhase = "SEQ_2"; break;
+                case "SEQ_2":
+                    window.state.bossPhase = "SEQ_3_WARN"; window.state.isTimingActive = true; window.state.hasAttemptedParry = false;
+                    window.state.fiveBeatTargetTime = internalClock + ( (60000/window.state.bpm) * 2 );
+                    document.getElementById('indicator-left').style.opacity = '1'; document.getElementById('indicator-right').style.opacity = '1';
+                    break;
+                case "SEQ_3_WARN": window.state.bossPhase = "SEQ_4_READY"; break;
+                case "SEQ_4_READY":
+                    window.state.bossPhase = "SEQ_5_ATTACK"; 
+                    setTimeout(() => {
+                        if (window.state.bossPhase === "SEQ_5_ATTACK") {
+                            if (!window.state.hasAttemptedParry) {
+                                addLog("ACTION", "Miss (시간 초과)"); showFloatingText("MISS", "#ff5555"); applyDamageToPlayer(window.state.boss.atk);
+                            }
+                            endAttackSeq();
+                        }
+                    }, (60000/window.state.bpm));
+                    break;
+                case "PARRIED":
+                    restoreTempo(); window.state.drawingMode.active = false; window.state.bossPhase = "SKILL_FIRE"; 
+                    fireQueuedSkills(); // 순차 발사 시작
+                    break;
+                case "SKILL_FIRE": endAttackSeq(); break;
+            }
+            if(!window.state.drawingMode.active) render();
+        }
+
+        function applyDamageToPlayer(dmg) {
+            const pRect = document.getElementById("player-sprite").getBoundingClientRect();
+            if(window.state.player.hasShield) {
+                spawnDamageText(pRect.left + 50, pRect.top, 0, true); window.state.player.hasShield = false; addLog("ACTION", "쉴드 전개! 데미지 0");
+            } else {
+                window.state.player.hp -= dmg;
+                if(window.state.player.hp <= 0) { window.state.player.hp = 0; gameOver(); }
+                spawnDamageText(pRect.left + 50, pRect.top, dmg, false);
+            }
+        }
+
+        function startDrawingMode(isPerfect) {
+            window.state.isTimingActive = false; window.state.bossPhase = "PARRIED"; window.state.beatCount = 4.5; 
+            fadeVolume(0.3, 500);
+            document.body.classList.add("bullet-time"); document.getElementById("game-container").classList.add("bullet-time");
+            window.state.drawingMode.active = true; window.state.drawingMode.perfectBuff = isPerfect; window.state.drawingMode.queuedSkills = []; 
+            ctx.clearRect(0,0, canvas.width, canvas.height); renderQuedSkills(); render();
+        }
+
+        function restoreTempo() {
+            fadeVolume(1.0, 500);
+            document.body.classList.remove("bullet-time"); document.getElementById("game-container").classList.remove("bullet-time");
+        }
+
+        function endAttackSeq() {
+            window.state.isTimingActive = false; window.state.fiveBeatTargetTime = 0; window.state.hasAttemptedParry = false;
+            restoreTempo(); window.state.drawingMode.active = false;
+            const cool = Math.floor(Math.random() * 3) + 3; window.state.bossPhase = "COOLDOWN"; window.state.beatCount = cool;
+            document.getElementById('indicator-left').style.left = '0%'; document.getElementById('indicator-right').style.left = '100%';
+            render();
+        }
+
+        function gameOver() { window.state.gameState = "GAMEOVER"; cancelAnimationFrame(gameLoopReq); bgmAudio.pause(); document.getElementById("gameover-overlay").style.display = 'flex'; }
+        function gameClear() {
+            window.state.gameState = "GAMEOVER"; cancelAnimationFrame(gameLoopReq); bgmAudio.pause();
+            const ov = document.getElementById("gameover-overlay"); ov.style.background = "rgba(0,50,0,0.85)";
+            ov.innerHTML = `<h1 style="color:#00ff55; text-shadow:0 0 20px #00ff00;">BOSS DEFEATED!</h1><button class="ui-btn" onclick="location.reload()">재시작</button>`;
+            ov.style.display = 'flex';
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') e.preventDefault();
+            if (e.code === 'Space' && window.state.gameState === "PLAYING" && window.state.bossPhase !== "PARRIED") {
+                if (!window.state.isTimingActive) return;
+                if (window.state.hasAttemptedParry) return;
+                window.state.hasAttemptedParry = true; 
+
+                const diffStr = (internalClock - window.state.fiveBeatTargetTime);
+                const diff = Math.abs(diffStr);
+
+                if (diff <= window.state.perfectRangeMs) {
+                    playSound('parry_perfect');  
+                    addLog("ACTION", `Perfect! (오차: ${Math.round(diff)}ms)`); showFloatingText("PERFECT!", "#00ff66"); startDrawingMode(true); 
+                } else if (diff <= window.state.goodRangeMs) {
+                    playSound('parry_good'); 
+                    addLog("ACTION", `Good! (오차: ${Math.round(diff)}ms)`); showFloatingText("GOOD!", "#ffdd00"); startDrawingMode(false);
+                } else {
+                    addLog("ACTION", `Miss! (오차: ${Math.round(diff)}ms)`); showFloatingText("MISS", "#ff3333"); applyDamageToPlayer(window.state.boss.atk);
+                    if(window.state.bossPhase === "SEQ_5_ATTACK" || window.state.bossPhase.startsWith("SEQ")) endAttackSeq();
+                }
+            }
+        });
+        render();
+    </script>
+</body>
+</html>
